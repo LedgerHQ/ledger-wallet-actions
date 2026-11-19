@@ -139,7 +139,7 @@ jobs:
           registry: ${{ inputs.registry }}
           npmrc-location: "$HOME/.npmrc"
 
-      # The login exports JFROG_TOKEN and saves it under ~/.jfrog; only the install step gets it back, as ~/.npmrc.
+      # The login exports JFROG_TOKEN and saves it under ~/.jfrog; install-command's tools (from mise) get it back as ~/.npmrc.
       - name: Stash the registry credential
         if: inputs.registry != '' && inputs.install-command != ''
         run: |
@@ -150,11 +150,13 @@ jobs:
       # Runner images that bake mise.toml's tools skip the install.
       - id: mise
         if: inputs.install-command != '' || inputs.command != ''
+        # exec replaces the step shell, whose /proc/<pid>/environ would still hold the OIDC variables.
         run: |
           mkdir -p "$RUNNER_TEMP/mise-empty"
-          if command -v mise >/dev/null 2>&1 && missing="$(env -u ACTIONS_ID_TOKEN_REQUEST_URL -u ACTIONS_ID_TOKEN_REQUEST_TOKEN mise ls --missing --local 2>/dev/null)" && [ -z "$missing" ]; then
-            echo "preinstalled=true" >> "$GITHUB_OUTPUT"
-          fi
+          exec env -u ACTIONS_ID_TOKEN_REQUEST_URL -u ACTIONS_ID_TOKEN_REQUEST_TOKEN bash -c '
+            if command -v mise >/dev/null 2>&1 && missing="$(mise ls --missing --local 2>/dev/null)" && [ -z "$missing" ]; then
+              echo "preinstalled=true" >> "$GITHUB_OUTPUT"
+            fi'
 
       # Only installs the mise binary, from an empty folder so the branch's config is not read here.
       - if: (inputs.install-command != '' || inputs.command != '') && steps.mise.outputs.preinstalled != 'true'
@@ -168,18 +170,18 @@ jobs:
       - if: (inputs.install-command != '' || inputs.command != '') && steps.mise.outputs.preinstalled != 'true'
         env:
           MISE_GITHUB_TOKEN: ${{ github.token }}
-        run: env -u ACTIONS_ID_TOKEN_REQUEST_URL -u ACTIONS_ID_TOKEN_REQUEST_TOKEN mise install
+        run: exec env -u ACTIONS_ID_TOKEN_REQUEST_URL -u ACTIONS_ID_TOKEN_REQUEST_TOKEN mise install
 
       - name: Install
         if: inputs.install-command != ''
         env:
           INSTALL_COMMAND: ${{ inputs.install-command }}
         run: |
-          trap 'rm -f ~/.npmrc' EXIT
           if [ -f "$RUNNER_TEMP/registry.npmrc" ]; then mv "$RUNNER_TEMP/registry.npmrc" ~/.npmrc; fi
-          env -u ACTIONS_ID_TOKEN_REQUEST_URL -u ACTIONS_ID_TOKEN_REQUEST_TOKEN bash -ec "$INSTALL_COMMAND"
+          exec env -u ACTIONS_ID_TOKEN_REQUEST_URL -u ACTIONS_ID_TOKEN_REQUEST_TOKEN bash -ec "$INSTALL_COMMAND"
 
       - name: Drop the registry credential before running dependency code
+        if: always()
         run: rm -f ~/.npmrc "$RUNNER_TEMP/registry.npmrc"
 
       - name: Run command
@@ -187,7 +189,7 @@ jobs:
         env:
           COMMAND: ${{ inputs.command }}
           GITHUB_TOKEN: ${{ github.token }}
-        run: env -u ACTIONS_ID_TOKEN_REQUEST_URL -u ACTIONS_ID_TOKEN_REQUEST_TOKEN bash -ec "$COMMAND"
+        run: exec env -u ACTIONS_ID_TOKEN_REQUEST_URL -u ACTIONS_ID_TOKEN_REQUEST_TOKEN bash -ec "$COMMAND"
 
       - id: collect
         run: |
