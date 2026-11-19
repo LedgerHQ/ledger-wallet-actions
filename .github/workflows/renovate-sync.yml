@@ -96,6 +96,7 @@ jobs:
     env:
       CHANGESET: .changeset/renovate-pr-${{ github.event.pull_request.number }}.md
       FILES: ${{ inputs.files }}
+      MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -111,25 +112,11 @@ jobs:
           auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
           git -c "http.extraheader=AUTHORIZATION: basic $auth" fetch --no-tags --depth=1 "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$BASE"
 
-      # The changeset alone only needs Node.js; mise is for install-command and command.
-      - if: inputs.install-command == '' && inputs.command == ''
-        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+      # Steps that keep the OIDC variables run before anything reads the branch's mise.toml, which can run code.
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 24
           package-manager-cache: false
-
-      # Runner images that bake mise.toml's tools skip the install.
-      - id: mise
-        if: inputs.install-command != '' || inputs.command != ''
-        run: |
-          if command -v mise >/dev/null 2>&1 && missing="$(mise ls --missing --local 2>/dev/null)" && [ -z "$missing" ]; then
-            echo "preinstalled=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - if: (inputs.install-command != '' || inputs.command != '') && steps.mise.outputs.preinstalled != 'true'
-        uses: jdx/mise-action@d5574b52816a478f9d4e6529a3f6ff17a8a36785 # v5.2.8
-        with:
-          github_token: ${{ github.token }}
 
       - name: Generate changeset
         if: github.head_ref != 'renovate/lock-file-maintenance'
@@ -140,6 +127,29 @@ jobs:
           title: ${{ github.event.pull_request.title }}
           minor-packages: ${{ inputs.minor-packages }}
           bundled-paths: ${{ inputs.bundled-paths }}
+
+      # Runner images that bake mise.toml's tools skip the install.
+      - id: mise
+        if: inputs.install-command != '' || inputs.command != ''
+        run: |
+          mkdir -p "$RUNNER_TEMP/mise-empty"
+          if command -v mise >/dev/null 2>&1 && missing="$(env -u ACTIONS_ID_TOKEN_REQUEST_URL -u ACTIONS_ID_TOKEN_REQUEST_TOKEN mise ls --missing --local 2>/dev/null)" && [ -z "$missing" ]; then
+            echo "preinstalled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Only installs the mise binary, from an empty folder so the branch's config is not read here.
+      - if: (inputs.install-command != '' || inputs.command != '') && steps.mise.outputs.preinstalled != 'true'
+        uses: jdx/mise-action@d5574b52816a478f9d4e6529a3f6ff17a8a36785 # v5.2.8
+        with:
+          install: false
+          cache: false
+          env: false
+          working_directory: ${{ runner.temp }}/mise-empty
+
+      - if: (inputs.install-command != '' || inputs.command != '') && steps.mise.outputs.preinstalled != 'true'
+        env:
+          MISE_GITHUB_TOKEN: ${{ github.token }}
+        run: env -u ACTIONS_ID_TOKEN_REQUEST_URL -u ACTIONS_ID_TOKEN_REQUEST_TOKEN mise install
 
       - id: jfrog-login
         if: inputs.registry != '' && inputs.install-command != ''
