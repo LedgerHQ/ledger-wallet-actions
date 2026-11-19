@@ -28,7 +28,7 @@ on:
         type: string
         default: ""
       files:
-        description: Extra repository files that command regenerates and that get committed with the changeset (newline separated).
+        description: Extra repository files that command regenerates and that get committed with the changeset (newline separated; no spaces or glob characters).
         type: string
         default: ""
       renovate-login:
@@ -230,7 +230,8 @@ jobs:
           while IFS= read -r file; do [ -n "$file" ] && paths+=("$file"); done <<< "$FILES"
           # Artifact and checkout are untrusted: copy only the expected files, no symlinks, no git hooks.
           for file in "${paths[@]}"; do
-            case "$file" in /* | *..* | -*) echo "::error::invalid path $file"; exit 1 ;; esac
+            # The commit action splits its file pattern on whitespace and globs it, so such paths are refused.
+            case "$file" in /* | *..* | -* | *[[:space:]*?[]*) echo "::error::invalid path $file"; exit 1 ;; esac
             [ "$(realpath -m -- "$file")" = "$(pwd -P)/$file" ] || { echo "::error::$file goes through a symlink"; exit 1; }
             if [ -f "$RUNNER_TEMP/fixup/$file" ]; then
               mkdir -p -- "$(dirname -- "$file")"
