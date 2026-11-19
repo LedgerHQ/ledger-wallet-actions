@@ -7,10 +7,6 @@ on:
         description: Runner of the job that runs the branch code.
         type: string
         default: ubuntu-24.04
-      actions-ref:
-        description: Ref of LedgerHQ/ledger-wallet-actions to load the renovate-changeset action from; keep it on the ref this workflow is called at.
-        type: string
-        default: main
       minor-packages:
         description: Package names that get a minor bump instead of a patch (newline separated).
         type: string
@@ -106,20 +102,11 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: LedgerHQ/ledger-wallet-actions
-          ref: ${{ inputs.actions-ref }}
-          path: .ledger-wallet-actions
-          persist-credentials: false
-          sparse-checkout: actions/renovate-changeset
-
       - name: Fetch the merge base
         env:
           BASE: ${{ needs.changes.outputs.base }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          echo ".ledger-wallet-actions/" >> .git/info/exclude
           # Authenticates this fetch only (private repositories); nothing is persisted for the branch code.
           auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
           git -c "http.extraheader=AUTHORIZATION: basic $auth" fetch --no-tags --depth=1 "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$BASE"
@@ -146,7 +133,7 @@ jobs:
 
       - name: Generate changeset
         if: github.head_ref != 'renovate/lock-file-maintenance'
-        uses: ./.ledger-wallet-actions/actions/renovate-changeset
+        uses: LedgerHQ/ledger-wallet-actions/.github/actions/renovate-changeset@feat/renovate-sync # zizmor: ignore[unpinned-uses] same repo, cannot pin its own commit
         with:
           base: ${{ needs.changes.outputs.base }}
           name: renovate-pr-${{ github.event.pull_request.number }}

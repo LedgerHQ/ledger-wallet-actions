@@ -57,9 +57,6 @@ regenerate plug it in through inputs, e.g. ledger-live's Podfile.lock:
 
 `registry` logs in to JFrog, which only accepts Ledger runners: set `runs-on` to one when using it.
 
-The workflow loads this action from `actions-ref` (default `main`): a caller testing a branch sets both the
-`uses:` ref and `actions-ref` to it.
-
 ## Bump rules
 
 - A workspace package is bumped (`patch`) when its `dependencies` or `optionalDependencies` resolve to a new
@@ -70,5 +67,5 @@ The workflow loads this action from `actions-ref` (default `main`): a caller tes
 
 ## Action
 
-`actions/renovate-changeset` only writes `.changeset/<name>.md`, for repositories that wire their own workflow.
+`.github/actions/renovate-changeset` only writes `.changeset/<name>.md`, for repositories that wire their own workflow.
 See [action.yml](action.yml) for its inputs.
