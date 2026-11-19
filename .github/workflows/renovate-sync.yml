@@ -112,7 +112,7 @@ jobs:
           auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
           git -c "http.extraheader=AUTHORIZATION: basic $auth" fetch --no-tags --depth=1 "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$BASE"
 
-      # Steps that keep the OIDC variables run before anything reads the branch's mise.toml, which can run code.
+      # Steps that keep the OIDC variables, including the JFrog login, run before the branch's mise.toml (which can run code) is read.
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 24
@@ -127,6 +127,25 @@ jobs:
           title: ${{ github.event.pull_request.title }}
           minor-packages: ${{ inputs.minor-packages }}
           bundled-paths: ${{ inputs.bundled-paths }}
+
+      - id: jfrog-login
+        if: inputs.registry != '' && inputs.install-command != ''
+        uses: LedgerHQ/actions-security/actions/jfrog-login@b9e0f8af18a3db56e133a46ccf83499c8279508e
+
+      - if: inputs.registry != '' && inputs.install-command != ''
+        uses: LedgerHQ/actions-security/actions/jfrog-npm@b9e0f8af18a3db56e133a46ccf83499c8279508e
+        with:
+          token: ${{ steps.jfrog-login.outputs.oidc-token }}
+          registry: ${{ inputs.registry }}
+          npmrc-location: "$HOME/.npmrc"
+
+      # The login exports JFROG_TOKEN and saves it under ~/.jfrog; only the install step gets it back, as ~/.npmrc.
+      - name: Stash the registry credential
+        if: inputs.registry != '' && inputs.install-command != ''
+        run: |
+          mv ~/.npmrc "$RUNNER_TEMP/registry.npmrc"
+          rm -r -f "${JFROG_CLI_HOME_DIR:-$HOME/.jfrog}"
+          printf 'JFROG_TOKEN=\nJFROG_USER=\n' >> "$GITHUB_ENV"
 
       # Runner images that bake mise.toml's tools skip the install.
       - id: mise
@@ -151,25 +170,17 @@ jobs:
           MISE_GITHUB_TOKEN: ${{ github.token }}
         run: env -u ACTIONS_ID_TOKEN_REQUEST_URL -u ACTIONS_ID_TOKEN_REQUEST_TOKEN mise install
 
-      - id: jfrog-login
-        if: inputs.registry != '' && inputs.install-command != ''
-        uses: LedgerHQ/actions-security/actions/jfrog-login@b9e0f8af18a3db56e133a46ccf83499c8279508e
-
-      - if: inputs.registry != '' && inputs.install-command != ''
-        uses: LedgerHQ/actions-security/actions/jfrog-npm@b9e0f8af18a3db56e133a46ccf83499c8279508e
-        with:
-          token: ${{ steps.jfrog-login.outputs.oidc-token }}
-          registry: ${{ inputs.registry }}
-          npmrc-location: "$HOME/.npmrc"
-
       - name: Install
         if: inputs.install-command != ''
         env:
           INSTALL_COMMAND: ${{ inputs.install-command }}
-        run: env -u ACTIONS_ID_TOKEN_REQUEST_URL -u ACTIONS_ID_TOKEN_REQUEST_TOKEN bash -ec "$INSTALL_COMMAND"
+        run: |
+          trap 'rm -f ~/.npmrc' EXIT
+          if [ -f "$RUNNER_TEMP/registry.npmrc" ]; then mv "$RUNNER_TEMP/registry.npmrc" ~/.npmrc; fi
+          env -u ACTIONS_ID_TOKEN_REQUEST_URL -u ACTIONS_ID_TOKEN_REQUEST_TOKEN bash -ec "$INSTALL_COMMAND"
 
       - name: Drop the registry credential before running dependency code
-        run: rm -f ~/.npmrc
+        run: rm -f ~/.npmrc "$RUNNER_TEMP/registry.npmrc"
 
       - name: Run command
         if: inputs.command != ''
