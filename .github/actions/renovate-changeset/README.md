@@ -11,7 +11,7 @@ the `pnpm-lock.yaml` diff and pushes it back to the Renovate branch.
 | Job        | Token                  | Runs branch code                       |
 | ---------- | ---------------------- | -------------------------------------- |
 | `changes`  | read                   | no: only decides whether to sync       |
-| `generate` | read (+ OIDC for JFrog) | yes: mise tools, `install-command` and `command`, all without the OIDC variables |
+| `generate` | read (+ OIDC for JFrog) | yes: mise tools, `install-command` and `command`, after the JFrog login and without the OIDC variables; only `install-command` gets the registry credential |
 | `push`     | GitHub App, write      | no: copies expected files, signed commit via GraphQL |
 
 Make it the first job of the PR workflow and gate the rest on `dirty`, since the pushed commit
