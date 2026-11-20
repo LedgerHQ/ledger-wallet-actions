@@ -1,0 +1,51 @@
+name: Renovate changeset
+description: >-
+  Writes .changeset/<name>.md for the workspace packages whose dependencies changed in pnpm-lock.yaml
+  since `base`, or removes it when none did. Needs only git and Node.js: nothing is installed or run
+  from the repository.
+inputs:
+  base:
+    description: Revision to diff pnpm-lock.yaml against (usually the PR merge base). Must be fetched.
+    required: true
+  name:
+    description: Changeset file name, without extension.
+    required: true
+  title:
+    description: Changeset summary (usually the PR title).
+    required: true
+  minor-packages:
+    description: Package names that get a minor bump instead of a patch (newline or comma separated).
+    default: ""
+  bundled-paths:
+    description: >-
+      Workspace directories whose packages bundle their devDependencies, such as apps (newline or comma
+      separated). Other packages are only bumped on dependencies or optionalDependencies changes.
+    default: ""
+  lockfile:
+    description: Path to pnpm-lock.yaml; workspace directories are resolved from its folder.
+    default: pnpm-lock.yaml
+  changeset-dir:
+    description: Changesets directory.
+    default: .changeset
+outputs:
+  changed:
+    description: "true when the changeset file was written, updated or removed"
+    value: ${{ steps.generate.outputs.changed }}
+runs:
+  using: composite
+  steps:
+    - id: generate
+      shell: bash
+      env:
+        BASE: ${{ inputs.base }}
+        NAME: ${{ inputs.name }}
+        TITLE: ${{ inputs.title }}
+        MINOR_PACKAGES: ${{ inputs.minor-packages }}
+        BUNDLED_PATHS: ${{ inputs.bundled-paths }}
+        LOCKFILE: ${{ inputs.lockfile }}
+        CHANGESET_DIR: ${{ inputs.changeset-dir }}
+      run: |
+        node "$GITHUB_ACTION_PATH/renovate-changeset.mjs"
+        if [ -n "$(git status --porcelain -- "$CHANGESET_DIR/$NAME.md")" ]; then
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+        fi
