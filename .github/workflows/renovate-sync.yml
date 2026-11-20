@@ -98,19 +98,18 @@ jobs:
       FILES: ${{ inputs.files }}
       MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The second checkout reuses the repository, so the merge base stays fetched for the generator's diff.
+      - name: Checkout the merge base
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.changes.outputs.base }}
+          persist-credentials: false
+
+      - name: Checkout the PR head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
-
-      - name: Fetch the merge base
-        env:
-          BASE: ${{ needs.changes.outputs.base }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # Authenticates this fetch only (private repositories); nothing is persisted for the branch code.
-          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
-          git -c "http.extraheader=AUTHORIZATION: basic $auth" fetch --no-tags --depth=1 "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$BASE"
 
       # Steps that keep the OIDC variables, including the JFrog login, run before the branch's mise.toml (which can run code) is read.
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
@@ -226,7 +225,7 @@ jobs:
       FILES: ${{ inputs.files }}
     steps:
       - id: token
-        uses: actions/create-github-app-token@29824e69f54612133e76f7eaac726eef6c875baf # 2.2.1
+        uses: actions/create-github-app-token@29824e69f54612133e76f7eaac726eef6c875baf # v2.2.1
         with:
           app-id: ${{ secrets.GH_BOT_APP_ID }}
           private-key: ${{ secrets.GH_BOT_PRIVATE_KEY }}
