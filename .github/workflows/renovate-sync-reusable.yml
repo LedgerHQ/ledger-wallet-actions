@@ -1,0 +1,287 @@
+name: "[Renovate] - Sync changeset - Called"
+
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        description: Runner of the job that runs the branch code.
+        type: string
+        default: ubuntu-24.04
+      minor-packages:
+        description: Package names that get a minor bump instead of a patch (newline separated).
+        type: string
+        default: ""
+      bundled-paths:
+        description: Workspace directories whose packages bundle their devDependencies, such as apps (newline separated).
+        type: string
+        default: ""
+      registry:
+        description: Artifactory npm registry to log in to before install-command (vars.ARTIFACTORY_URL). Needs a JFrog-whitelisted runs-on.
+        type: string
+        default: ""
+      install-command:
+        description: Optional install run with the registry credential, before command. Use --ignore-scripts.
+        type: string
+        default: ""
+      command:
+        description: Optional extra generation step (e.g. regenerate Podfile.lock), run once the registry credential is dropped.
+        type: string
+        default: ""
+      files:
+        description: Extra repository files that command regenerates and that get committed with the changeset (newline separated; no spaces or glob characters).
+        type: string
+        default: ""
+      renovate-login:
+        description: Author of the Renovate PRs to sync.
+        type: string
+        default: renovate-operator-ledger[bot]
+      bot-login:
+        description: Login of the GitHub App that pushes the sync commit, whose own push must not trigger a new sync.
+        type: string
+        default: live-github-bot[bot]
+      commit-message:
+        type: string
+        default: "chore(deps): sync changeset"
+    secrets:
+      GH_BOT_APP_ID:
+        required: true
+      GH_BOT_PRIVATE_KEY:
+        required: true
+    outputs:
+      dirty:
+        description: "true once a fix commit with the missing changeset (or files) was pushed"
+        value: ${{ jobs.push.outputs.pushed }}
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    name: Check changed files
+    # Always runs: a reusable workflow whose jobs are all skipped is skipped, and so is all the CI below it.
+    runs-on: ubuntu-24.04
+    outputs:
+      base: ${{ steps.compare.outputs.base }}
+      relevant: ${{ steps.compare.outputs.relevant }}
+    steps:
+      - id: compare
+        if: >-
+          startsWith(github.head_ref, 'renovate/') &&
+          github.event.pull_request.user.login == inputs.renovate-login &&
+          github.event.sender.login != inputs.bot-login
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/compare/$BASE_SHA...$HEAD_SHA" > "$RUNNER_TEMP/compare.json"
+          echo "base=$(jq -r .merge_base_commit.sha "$RUNNER_TEMP/compare.json")" >> "$GITHUB_OUTPUT"
+          # The compare API lists at most 300 files: past that, pnpm-lock.yaml may be left out.
+          if [ "$(jq '.files | length' "$RUNNER_TEMP/compare.json")" -ge 300 ] ||
+            jq -r '.files[].filename' "$RUNNER_TEMP/compare.json" | grep -qE '^(pnpm-lock\.yaml|\.changeset/renovate-.*\.md)$'; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Runs the updated dependencies' code (through install-command and command), so it gets no write token.
+  generate:
+    name: Generate changeset
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
+    runs-on: ${{ inputs.runs-on }}
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      changed: ${{ steps.collect.outputs.changed }}
+    env:
+      CHANGESET: .changeset/renovate-pr-${{ github.event.pull_request.number }}.md
+      FILES: ${{ inputs.files }}
+      MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
+    steps:
+      # The second checkout reuses the repository, so the merge base stays fetched for the generator's diff.
+      - name: Checkout the merge base
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.changes.outputs.base }}
+          persist-credentials: false
+
+      - name: Checkout the PR head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      # Steps that keep the OIDC variables, including the JFrog login, run before the branch's mise.toml (which can run code) is read.
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Generate changeset
+        if: github.head_ref != 'renovate/lock-file-maintenance'
+        uses: LedgerHQ/ledger-wallet-actions/.github/actions/renovate-changeset-reusable@main
+        with:
+          base: ${{ needs.changes.outputs.base }}
+          name: renovate-pr-${{ github.event.pull_request.number }}
+          title: ${{ github.event.pull_request.title }}
+          minor-packages: ${{ inputs.minor-packages }}
+          bundled-paths: ${{ inputs.bundled-paths }}
+
+      - id: jfrog-login
+        if: inputs.registry != '' && inputs.install-command != ''
+        uses: LedgerHQ/actions-security/actions/jfrog-login@b9e0f8af18a3db56e133a46ccf83499c8279508e
+
+      - if: inputs.registry != '' && inputs.install-command != ''
+        uses: LedgerHQ/actions-security/actions/jfrog-npm@b9e0f8af18a3db56e133a46ccf83499c8279508e
+        with:
+          token: ${{ steps.jfrog-login.outputs.oidc-token }}
+          registry: ${{ inputs.registry }}
+          npmrc-location: "$HOME/.npmrc"
+
+      # The login exports JFROG_TOKEN and saves it under ~/.jfrog; install-command's tools (from mise) get it back as ~/.npmrc.
+      - name: Stash the registry credential
+        if: inputs.registry != '' && inputs.install-command != ''
+        run: |
+          mv ~/.npmrc "$RUNNER_TEMP/registry.npmrc"
+          rm -r -f "${JFROG_CLI_HOME_DIR:-$HOME/.jfrog}"
+          printf 'JFROG_TOKEN=\nJFROG_USER=\n' >> "$GITHUB_ENV"
+
+      # Runner images that bake mise.toml's tools skip the install.
+      - id: mise
+        if: inputs.install-command != '' || inputs.command != ''
+        # exec replaces the step shell, whose /proc/<pid>/environ would still hold the OIDC variables.
+        run: |
+          mkdir -p "$RUNNER_TEMP/mise-empty"
+          exec env -u ACTIONS_ID_TOKEN_REQUEST_URL -u ACTIONS_ID_TOKEN_REQUEST_TOKEN bash -c '
+            if command -v mise >/dev/null 2>&1 && missing="$(mise ls --missing --local 2>/dev/null)" && [ -z "$missing" ]; then
+              echo "preinstalled=true" >> "$GITHUB_OUTPUT"
+            fi'
+
+      # Only installs the mise binary, from an empty folder so the branch's config is not read here.
+      - if: (inputs.install-command != '' || inputs.command != '') && steps.mise.outputs.preinstalled != 'true'
+        uses: jdx/mise-action@d5574b52816a478f9d4e6529a3f6ff17a8a36785 # v5.2.8
+        with:
+          install: false
+          cache: false
+          env: false
+          working_directory: ${{ runner.temp }}/mise-empty
+
+      - if: (inputs.install-command != '' || inputs.command != '') && steps.mise.outputs.preinstalled != 'true'
+        env:
+          MISE_GITHUB_TOKEN: ${{ github.token }}
+        run: exec env -u ACTIONS_ID_TOKEN_REQUEST_URL -u ACTIONS_ID_TOKEN_REQUEST_TOKEN mise install
+
+      - name: Install
+        if: inputs.install-command != ''
+        env:
+          INSTALL_COMMAND: ${{ inputs.install-command }}
+        run: |
+          if [ -f "$RUNNER_TEMP/registry.npmrc" ]; then mv "$RUNNER_TEMP/registry.npmrc" ~/.npmrc; fi
+          exec env -u ACTIONS_ID_TOKEN_REQUEST_URL -u ACTIONS_ID_TOKEN_REQUEST_TOKEN bash -ec "$INSTALL_COMMAND"
+
+      - name: Drop the registry credential before running dependency code
+        if: always()
+        run: rm -f ~/.npmrc "$RUNNER_TEMP/registry.npmrc"
+
+      - name: Run command
+        if: inputs.command != ''
+        env:
+          COMMAND: ${{ inputs.command }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: exec env -u ACTIONS_ID_TOKEN_REQUEST_URL -u ACTIONS_ID_TOKEN_REQUEST_TOKEN bash -ec "$COMMAND"
+
+      - id: collect
+        run: |
+          mkdir -p "$RUNNER_TEMP/fixup"
+          touch "$RUNNER_TEMP/fixup/.keep"
+          paths=("$CHANGESET")
+          while IFS= read -r file; do [ -n "$file" ] && paths+=("$file"); done <<< "$FILES"
+          status=$(git status --porcelain -- "${paths[@]}")
+          echo "$status"
+          [ -z "$status" ] && exit 0
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          for file in "${paths[@]}"; do
+            if [ -f "$file" ]; then cp --parents -- "$file" "$RUNNER_TEMP/fixup/"; fi
+          done
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: steps.collect.outputs.changed == 'true'
+        with:
+          name: renovate-fixup
+          path: ${{ runner.temp }}/fixup
+          include-hidden-files: true
+          retention-days: 1
+
+  # Holds the write token and runs no code from the branch.
+  push:
+    name: Push changeset
+    needs: generate
+    if: needs.generate.outputs.changed == 'true'
+    runs-on: ubuntu-24.04
+    outputs:
+      pushed: ${{ steps.pushed.outputs.pushed }}
+    env:
+      CHANGESET: .changeset/renovate-pr-${{ github.event.pull_request.number }}.md
+      FILES: ${{ inputs.files }}
+    steps:
+      - id: token
+        uses: actions/create-github-app-token@29824e69f54612133e76f7eaac726eef6c875baf # v2.2.1
+        with:
+          app-id: ${{ secrets.GH_BOT_APP_ID }}
+          private-key: ${{ secrets.GH_BOT_PRIVATE_KEY }}
+          permission-contents: write
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /.changeset/
+            ${{ inputs.files }}
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: renovate-fixup
+          path: ${{ runner.temp }}/fixup
+
+      - id: stage
+        name: Stage files
+        run: |
+          paths=("$CHANGESET")
+          while IFS= read -r file; do [ -n "$file" ] && paths+=("$file"); done <<< "$FILES"
+          # Artifact and checkout are untrusted: copy only the expected files, no symlinks, no git hooks.
+          for file in "${paths[@]}"; do
+            # The commit action splits its file pattern on whitespace and globs it, so such paths are refused.
+            case "$file" in /* | *..* | -* | *[[:space:]*?[]*) echo "::error::invalid path $file"; exit 1 ;; esac
+            [ "$(realpath -m -- "$file")" = "$(pwd -P)/$file" ] || { echo "::error::$file goes through a symlink"; exit 1; }
+            if [ -f "$RUNNER_TEMP/fixup/$file" ]; then
+              mkdir -p -- "$(dirname -- "$file")"
+              cp --remove-destination "$RUNNER_TEMP/fixup/$file" "$file"
+            else
+              rm -f -- "$file"
+            fi
+          done
+          # A pathspec absent from both tree and index fails, so stage only existing or tracked paths.
+          staged=()
+          for file in "${paths[@]}"; do
+            if [ -e "$file" ] || git ls-files --error-unmatch -- "$file" >/dev/null 2>&1; then staged+=("$file"); fi
+          done
+          [ ${#staged[@]} -gt 0 ] && git add -A -- "${staged[@]}"
+          if git diff --cached --quiet; then echo "::error::generate reported changes but nothing is staged"; exit 1; fi
+          echo "pattern=${staged[*]}" >> "$GITHUB_OUTPUT"
+
+      # Signed through the GraphQL API; the push re-triggers the caller, whose concurrency cancels this run.
+      - name: Commit and push
+        uses: planetscale/ghcommit-action@c6125dee9e9c0daebc4adea9f68ead8293414174 # v0.2.9
+        with:
+          commit_message: ${{ inputs.commit-message }}
+          repo: ${{ github.repository }}
+          branch: ${{ github.head_ref }}
+          file_pattern: ${{ steps.stage.outputs.pattern }}
+        env:
+          GITHUB_TOKEN: ${{ steps.token.outputs.token }}
+
+      # Set last: a failed push leaves dirty empty, so callers run their failure path instead of skipping checks.
+      - id: pushed
+        run: echo "pushed=true" >> "$GITHUB_OUTPUT"
