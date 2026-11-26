@@ -6,7 +6,7 @@ the `pnpm-lock.yaml` diff and pushes it back to the Renovate branch.
 
 ## Reusable workflow (recommended)
 
-`.github/workflows/renovate-sync.yml` runs it on Renovate PRs, split for safety:
+`.github/workflows/renovate-sync-reusable.yml` runs it on Renovate PRs, split for safety:
 
 | Job        | Token                  | Runs branch code                       |
 | ---------- | ---------------------- | -------------------------------------- |
@@ -24,7 +24,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: LedgerHQ/ledger-wallet-actions/.github/workflows/renovate-sync.yml@main
+    uses: LedgerHQ/ledger-wallet-actions/.github/workflows/renovate-sync-reusable.yml@main
     secrets:
       GH_BOT_APP_ID: ${{ secrets.GH_BOT_APP_ID }}
       GH_BOT_PRIVATE_KEY: ${{ secrets.GH_BOT_PRIVATE_KEY }}
@@ -67,5 +67,5 @@ regenerate plug it in through inputs, e.g. ledger-live's Podfile.lock:
 
 ## Action
 
-`.github/actions/renovate-changeset` only writes `.changeset/<name>.md`, for repositories that wire their own workflow.
+`.github/actions/renovate-changeset-reusable` only writes `.changeset/<name>.md`, for repositories that wire their own workflow.
 See [action.yml](action.yml) for its inputs.

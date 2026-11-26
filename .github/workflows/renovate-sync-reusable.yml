@@ -119,7 +119,7 @@ jobs:
 
       - name: Generate changeset
         if: github.head_ref != 'renovate/lock-file-maintenance'
-        uses: LedgerHQ/ledger-wallet-actions/.github/actions/renovate-changeset@main
+        uses: LedgerHQ/ledger-wallet-actions/.github/actions/renovate-changeset-reusable@main
         with:
           base: ${{ needs.changes.outputs.base }}
           name: renovate-pr-${{ github.event.pull_request.number }}
